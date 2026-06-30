@@ -1,0 +1,174 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infinite-canvas
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: infinite-canvas-nginx
+  namespace: infinite-canvas
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /tmp/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        access_log /var/log/nginx/access.log;
+
+        gzip on;
+        gzip_vary on;
+        gzip_proxied any;
+        gzip_comp_level 6;
+        gzip_min_length 256;
+        gzip_types
+            text/css
+            application/javascript
+            text/javascript
+            application/json
+            image/svg+xml;
+
+        upstream app {
+            server 127.0.0.1:3000;
+        }
+
+        server {
+            listen 8080;
+            server_name _;
+
+            location /_next/static/ {
+                proxy_pass http://app;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                expires 30d;
+                add_header Cache-Control "public, immutable";
+            }
+
+            location / {
+                proxy_pass http://app;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: infinite-canvas
+  namespace: infinite-canvas
+  labels:
+    app: infinite-canvas
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: infinite-canvas
+  template:
+    metadata:
+      labels:
+        app: infinite-canvas
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+        - name: infinite-canvas
+          image: ghcr.io/basketikun/infinite-canvas:v0.4.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: app
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: infinite-canvas-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: infinite-canvas
+  namespace: infinite-canvas
+spec:
+  selector:
+    app: infinite-canvas
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: infinite-canvas
+  namespace: infinite-canvas
+spec:
+  rules:
+    - host: canvas.caph.me
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: infinite-canvas
+                port:
+                  number: 3000
